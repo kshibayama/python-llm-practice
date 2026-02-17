@@ -1,3 +1,5 @@
+import logging
+import os
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -7,7 +9,12 @@ from app.db.models import Ticket, Result
 from app.schemas.ticket import TicketCreate, TicketRead
 from app.schemas.result import ResultRead
 
+from app.llm.ticket_processor import analyze_ticket
+from app.llm.client import OPENAI_MODEL, PROMPT_VERSION
+
 router = APIRouter(prefix="/tickets", tags=["tickets"])
+
+logger = logging.getLogger(__name__)
 
 @router.post("", response_model=TicketRead)
 def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)):
@@ -65,10 +72,12 @@ def process_ticket(
     db.commit()
 
     try:
-        # いまはダミー生成（Day3でLLMに差し替える）
-        summary = f"User reports an issue: {ticket.raw_text[:200]}"
-        category = "auth/login"
-        reply_draft = "Sorry to hear that. Please try resetting your password and confirm your email address."
+
+        analysis, request_id = analyze_ticket(ticket.raw_text)
+
+        summary = analysis.summary
+        category = analysis.category
+        reply_draft = analysis.reply_draft
 
         if existing is None:
             result = Result(
@@ -76,8 +85,8 @@ def process_ticket(
                 summary=summary,
                 category=category,
                 reply_draft=reply_draft,
-                model="dummy",
-                prompt_version="v1",
+                model=OPENAI_MODEL,
+                prompt_version=PROMPT_VERSION,
             )
             db.add(result)
         else:
@@ -95,8 +104,14 @@ def process_ticket(
         db.refresh(result)
         return result
 
-    except Exception:
+    except Exception as e:
         db.rollback()
+        logger.exception('processing failed', extra={"ticket_id": ticket_id})
+
+        # 開発中だけ detail に例外文字列を返す（本番では隠す）
+        if os.getenv("DEBUG", "1") == "1":
+            raise HTTPException(status_code=500, detail=f"processing failed: {type(e).__name__}: {e}")
+
         # 失敗を記録（最低限）
         ticket = db.execute(select(Ticket).where(Ticket.id == ticket_id)).scalar_one_or_none()
         if ticket is not None:

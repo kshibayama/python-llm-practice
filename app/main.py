@@ -1,27 +1,18 @@
 from fastapi import FastAPI
+from app.routers.tickets import router as tickets_router
+
 from pydantic import BaseModel
 from logging import getLogger
 import logging
 
-app = FastAPI()
+app = FastAPI(title="Ticket Demo")
+
+app.include_router(tickets_router)
+
 logger = getLogger(__name__)
-
-class Ticket(BaseModel):
-    name: str
-    description: str | None = None
-    price: float
-    tax: float | None = None
-
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
 
 @app.get("/health")
 def health_check():
     logger.info('health check')
     return { "ok": True }
 
-@app.post("/tickets")
-def update_ticekt(ticket: Ticket):
-    logger.info('update ticket')
-    return ticket

@@ -1,7 +1,10 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from logging import getLogger
+import logging
 
 app = FastAPI()
+logger = getLogger(__name__)
 
 class Ticket(BaseModel):
     name: str
@@ -15,8 +18,10 @@ def read_root():
 
 @app.get("/health")
 def health_check():
+    logger.info('health check')
     return { "ok": True }
 
 @app.post("/tickets")
 def update_ticekt(ticket: Ticket):
+    logger.info('update ticket')
     return ticket

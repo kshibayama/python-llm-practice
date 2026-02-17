@@ -1,3 +1,5 @@
 # binary cache for python
 __pycache__
 
+
+.env

@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+
+# DB / Migration
+sqlalchemy>=2.0
+alembic
+
+# HTTP（テストや外部API呼び出しにも使える）
+httpx
+
+# LLM（OpenAI APIを使う想定）
+openai
+
+# リトライ（Day3で効く）
+tenacity
+

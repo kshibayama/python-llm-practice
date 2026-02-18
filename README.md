@@ -30,7 +30,7 @@ This project focuses on having a solid, “production-ish” foundation:
 - Alembic
 - OpenAI Python SDK
 
-## Project Structure (example)
+## Project Structure
 
 ```text
 .
@@ -236,7 +236,4 @@ which uvicorn
 python -m uvicorn app.main:app --reload --workers 1
 ```
 
-```
-::contentReference[oaicite:0]{index=0}
-```
 

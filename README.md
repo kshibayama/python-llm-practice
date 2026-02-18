@@ -1,17 +1,25 @@
 # python-llm-practice (Ticket Demo)
 
-FastAPI + SQLite + SQLAlchemy + Alembic を使った「問い合わせ（ticket）」の永続化デモです。  
-Day3 以降で LLM 連携（要約・分類・返信案生成）に差し替える前提で、まずは **API / DB / マイグレーション / 冪等性の土台**を作っています。
+A simple demo app for persisting support inquiries (“tickets”) using **FastAPI + SQLite + SQLAlchemy + Alembic**.  
+It also generates and stores **summary / category / reply draft** for each ticket using an **LLM via the OpenAI API**.
+
+This project focuses on having a solid, “production-ish” foundation:
+- API + DB persistence
+- Migration management
+- Idempotent processing
+- Prompt versioning
+- Saving LLM execution metadata (request_id / latency / token usage)
 
 ## Features
 
-- `POST /tickets` で問い合わせを登録（SQLite 永続化）
-- `GET /tickets/{id}` で問い合わせを取得
-- `POST /tickets/{id}/process` で結果（summary/category/reply_draft）を生成して保存（現時点は **ダミー生成**）
-  - 既に result がある場合は冪等に既存を返す
-  - `force=true` で再生成（上書き）
-- `GET /tickets/{id}/result` で結果を取得
-- Alembic によるマイグレーション管理
+- `POST /tickets`: create a ticket (persisted in SQLite)
+- `GET /tickets/{id}`: fetch a ticket
+- `POST /tickets/{id}/process`: run LLM processing and save results (`summary/category/reply_draft`)
+  - Idempotent: if a result already exists, returns it
+  - `force=true` re-runs and overwrites the result
+- `GET /tickets/{id}/result`: fetch the saved result
+- Alembic migrations
+- Stores LLM execution metadata (`openai_request_id`, `latency_ms`, token usage)
 
 ## Tech Stack
 
@@ -20,6 +28,7 @@ Day3 以降で LLM 連携（要約・分類・返信案生成）に差し替え�
 - SQLite
 - SQLAlchemy 2.x
 - Alembic
+- OpenAI Python SDK
 
 ## Project Structure (example)
 
@@ -35,20 +44,30 @@ Day3 以降で LLM 連携（要約・分類・返信案生成）に差し替え�
 │  │  └─ session.py
 │  ├─ routers/
 │  │  └─ tickets.py
-│  └─ schemas/
-│     ├─ ticket.py
-│     └─ result.py
+│  ├─ schemas/
+│  │  ├─ ticket.py
+│  │  └─ result.py
+│  └─ llm/
+│     ├─ client.py
+│     ├─ prompts.py
+│     ├─ schemas.py
+│     └─ ticket_processor.py
+├─ prompts/
+│  └─ v1/
+│     └─ ticket_process_system.txt
 ├─ alembic/
 ├─ alembic.ini
 ├─ requirements.txt
 ├─ requirements-dev.txt
 └─ data/
    └─ app.db  (runtime)
-```
+````
 
 ## Setup
+
 ### 1) Create venv & install deps
-```
+
+```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
@@ -57,43 +76,65 @@ python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
 ### 2) Environment variables
-SQLite の DB ファイルを ./data/app.db に作ります。
 
-```
+Create the SQLite DB file at `./data/app.db`:
+
+```bash
 mkdir -p data
 export DATABASE_URL="sqlite+pysqlite:///./data/app.db"
 ```
 
-.env を使う場合（任意）:
+Set OpenAI-related env vars:
+
+```bash
+export OPENAI_API_KEY="YOUR_KEY"
+export OPENAI_MODEL="gpt-4o-mini-2024-07-18"   # example (adjust to what you can access)
+export PROMPT_VERSION="v1"
 ```
+
+Optional `.env`:
+
+```env
 DATABASE_URL=sqlite+pysqlite:///./data/app.db
+OPENAI_API_KEY=YOUR_KEY
+OPENAI_MODEL=gpt-4o-mini-2024-07-18
+PROMPT_VERSION=v1
 ```
 
 ### 3) Run migrations
+
+```bash
 alembic upgrade head
-4) Start API server
-SQLite は並列ワーカーと相性が微妙なので、基本は workers=1 推奨です。
 ```
+
+### 4) Start API server
+
+SQLite doesn’t pair well with multi-worker concurrency in many setups, so `workers=1` is recommended.
+
+```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --workers 1
 ```
 
 ## API
+
 ### Health check
-```
+
+```bash
 curl -s localhost:8000/health
 # -> {"ok":true}
 ```
 
 ### Create ticket
-```
+
+```bash
 curl -s -X POST localhost:8000/tickets \
   -H "Content-Type: application/json" \
   -d '{"raw_text":"I cannot login to my account. Please help.","source":"email"}'
 ```
 
-
 Response example:
-```
+
+```json
 {
   "id": 1,
   "created_at": "2026-02-17T16:35:05",
@@ -104,67 +145,98 @@ Response example:
 ```
 
 ### Get ticket
-```
+
+```bash
 curl -s localhost:8000/tickets/1
 ```
 
-### Process ticket (dummy result)
-```
+### Process ticket (LLM)
+
+```bash
 curl -s -X POST localhost:8000/tickets/1/process
 ```
-既に result がある場合、同じ結果を返します（冪等）。
 
-強制再生成したい場合：
+* If a result already exists, it returns the existing result (idempotent).
+* To force re-processing:
 
-```
+```bash
 curl -s -X POST "localhost:8000/tickets/1/process?force=true"
 ```
 
 ### Get result
-```
+
+```bash
 curl -s localhost:8000/tickets/1/result
 ```
 
 ## Data Model
+
 ### tickets
 
-```
+```text
 id, created_at, source, raw_text, status
 ```
 
 ### results
 
-```
-id, ticket_id (UNIQUE), summary, category, reply_draft, model, prompt_version, created_at
+```text
+id, ticket_id (UNIQUE), summary, category, reply_draft, model, prompt_version, created_at,
+openai_request_id, latency_ms, input_tokens, output_tokens, total_tokens, cached_tokens
 ```
 
-現時点では results は 1 ticket = 1 result の想定（ticket_id に UNIQUE 制約）。
+Currently assumes **1 ticket = 1 result** (`ticket_id` has a UNIQUE constraint).
 
 ## Development
+
 ### Create new migration (when models change)
-```
+
+```bash
 alembic revision --autogenerate -m "your_message"
 alembic upgrade head
 ```
 
 ### Reset DB (local)
-```
+
+```bash
 rm -f data/app.db
 alembic upgrade head
 ```
 
 ## Notes
-created_at は SQLite の CURRENT_TIMESTAMP 相当になるため、UTC扱いになって見える場合があります。
 
-運用では DB は UTC 保存 + 表示側でタイムゾーン変換、が一般的です。
-
-Day3 以降で POST /tickets/{id}/process のダミー生成部分を LLM 呼び出しに差し替える予定です。
+* `created_at` is similar to SQLite `CURRENT_TIMESTAMP` and may appear as UTC.
+  In production, it’s common to store timestamps in UTC and convert for display.
+* `POST /tickets/{id}/process` calls the OpenAI API; you need a valid `OPENAI_API_KEY` and an accessible `OPENAI_MODEL`.
+* If you hit billing/usage limits, requests may fail with `insufficient_quota` errors.
 
 ## Troubleshooting
-Can't proceed with --autogenerate ... does not provide a MetaData object
-Alembic が target_metadata を参照できていません。alembic/env.py に Base.metadata を設定し、models を import しているか確認してください。
 
-Can't load plugin: sqlalchemy.dialects:driver
-alembic.ini の sqlalchemy.url がテンプレの driver://... のままです。SQLite の URL に変更してください。
+### Can't proceed with --autogenerate ... does not provide a MetaData object
 
+Alembic cannot see `target_metadata`. Ensure `alembic/env.py` sets `target_metadata = Base.metadata` and imports your models.
+
+### Can't load plugin: sqlalchemy.dialects:driver
+
+Your `alembic.ini` still has the template URL `driver://...`. Change it to a SQLite URL like `sqlite+pysqlite:///./data/app.db`.
+
+### ModuleNotFoundError: No module named 'openai'
+
+Install the OpenAI SDK in your venv:
+
+```bash
+python -m pip install -U openai
+```
+
+Also verify `uvicorn` is running from your venv:
+
+```bash
+which python
+which uvicorn
+# If uvicorn is not under .venv:
+python -m uvicorn app.main:app --reload --workers 1
+```
+
+```
+::contentReference[oaicite:0]{index=0}
+```
 
